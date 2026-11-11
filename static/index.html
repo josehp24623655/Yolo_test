@@ -1,0 +1,263 @@
+<!DOCTYPE html>
+<html lang="ko">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>YOLO 로컬 테스트</title>
+  <style>
+    :root { color-scheme: dark; }
+    body { margin: 0; font-family: "Segoe UI", sans-serif; background: #121417; color: #e8eaed; }
+    header, main { padding: 16px 20px; }
+    header { display: flex; justify-content: space-between; align-items: center; border-bottom: 1px solid #2a2f36; }
+    h1 { margin: 0; font-size: 18px; font-weight: 650; }
+    #status { color: #9aa3ad; font-size: 13px; }
+    .layout { display: grid; grid-template-columns: minmax(0, 1.5fr) minmax(280px, 0.7fr); gap: 16px; }
+    .stage { position: relative; background: #000; border-radius: 8px; overflow: hidden; }
+    .stage video, .stage canvas { display: block; width: 100%; height: auto; }
+    #overlay { position: absolute; inset: 0; width: 100%; height: 100%; }
+    #snap { display: none; }
+    .controls { display: flex; gap: 8px; margin-top: 12px; flex-wrap: wrap; }
+    button { border: 0; border-radius: 8px; padding: 10px 14px; background: #3c4048; color: #fff; cursor: pointer; }
+    button.primary { background: #1a73e8; }
+    button:disabled { opacity: 0.45; cursor: default; }
+    select { border: 0; border-radius: 8px; padding: 10px 14px; background: #3c4048; color: #fff; }
+    article { background: #1b1f24; border-radius: 10px; padding: 12px; }
+    article h2 { margin: 0 0 8px; font-size: 15px; }
+    article img { width: 100%; border-radius: 8px; background: #000; }
+    .meta { color: #9aa3ad; font-size: 13px; margin: 8px 0; }
+    ul { margin: 8px 0 0; padding-left: 18px; }
+    li { margin: 2px 0; }
+    .empty { color: #9aa3ad; }
+    @media (max-width: 900px) {
+      .layout { grid-template-columns: 1fr; }
+    }
+  </style>
+</head>
+<body>
+  <header>
+    <h1>YOLO 로컬 테스트</h1>
+    <div id="status">모델 확인 중</div>
+  </header>
+  <main>
+    <div class="layout">
+      <section>
+        <div class="stage">
+          <video id="video" autoplay playsinline muted></video>
+          <canvas id="overlay"></canvas>
+        </div>
+        <canvas id="snap"></canvas>
+        <div id="webcamMeta" class="meta">대기</div>
+        <ul id="webcamList"></ul>
+        <div class="controls">
+          <select id="modelSelect"></select>
+          <button id="camButton" class="primary">웹캠 시작</button>
+          <button id="watchButton" disabled>실시간 인식</button>
+          <button id="captureButton" disabled>이 화면 캡처</button>
+        </div>
+      </section>
+      <article>
+        <h2>캡처</h2>
+        <div id="captureMeta" class="meta">대기</div>
+        <img id="captureImage" alt="">
+        <ul id="captureList"></ul>
+      </article>
+    </div>
+  </main>
+  <script>
+    const video = document.getElementById("video");
+    const snap = document.getElementById("snap");
+    const overlay = document.getElementById("overlay");
+    const camButton = document.getElementById("camButton");
+    const watchButton = document.getElementById("watchButton");
+    const captureButton = document.getElementById("captureButton");
+    const status = document.getElementById("status");
+    const modelSelect = document.getElementById("modelSelect");
+    let stream = null;
+    let watching = false;
+    let frames = 0;
+    let fpsStamp = performance.now();
+    let fps = 0;
+
+    function showStatus(data) {
+      status.textContent = data.ready ? `${data.model} · ${data.device}` : "모델 없음";
+    }
+
+    fetch("/api/health")
+      .then((response) => response.json())
+      .then((data) => {
+        data.models.forEach((item) => {
+          const option = document.createElement("option");
+          option.value = item.id;
+          option.textContent = item.label;
+          modelSelect.appendChild(option);
+        });
+        modelSelect.value = data.id;
+        showStatus(data);
+      })
+      .catch(() => {
+        status.textContent = "서버 연결 실패";
+      });
+
+    modelSelect.addEventListener("change", async () => {
+      const body = new FormData();
+      body.append("name", modelSelect.value);
+      const response = await fetch("/api/model", { method: "POST", body });
+      const data = await response.json();
+      if (!response.ok) {
+        status.textContent = data.detail || "모델 변경 실패";
+        return;
+      }
+      clearOverlay();
+      showStatus(data);
+    });
+
+    camButton.addEventListener("click", async () => {
+      if (stream) {
+        stopCamera();
+        return;
+      }
+      try {
+        stream = await navigator.mediaDevices.getUserMedia({ video: { width: 1280, height: 720 }, audio: false });
+        video.srcObject = stream;
+        camButton.textContent = "웹캠 중지";
+        watchButton.disabled = false;
+        captureButton.disabled = false;
+      } catch (error) {
+        status.textContent = "웹캠을 열지 못함";
+      }
+    });
+
+    watchButton.addEventListener("click", () => {
+      watching = !watching;
+      watchButton.textContent = watching ? "실시간 중지" : "실시간 인식";
+      if (watching) {
+        frames = 0;
+        fpsStamp = performance.now();
+        liveLoop();
+      } else {
+        clearOverlay();
+      }
+    });
+
+    captureButton.addEventListener("click", () => sendFrame("capture"));
+
+    function stopCamera() {
+      watching = false;
+      clearOverlay();
+      watchButton.textContent = "실시간 인식";
+      watchButton.disabled = true;
+      captureButton.disabled = true;
+      camButton.textContent = "웹캠 시작";
+      stream.getTracks().forEach((track) => track.stop());
+      stream = null;
+      video.srcObject = null;
+    }
+
+    async function liveLoop() {
+      while (watching) {
+        await sendFrame("webcam");
+      }
+    }
+
+    function grab(maxWidth, quality) {
+      const scale = Math.min(1, maxWidth / video.videoWidth);
+      snap.width = Math.max(1, Math.round(video.videoWidth * scale));
+      snap.height = Math.max(1, Math.round(video.videoHeight * scale));
+      snap.getContext("2d").drawImage(video, 0, 0, snap.width, snap.height);
+      return new Promise((resolve) => snap.toBlob(resolve, "image/jpeg", quality));
+    }
+
+    async function sendFrame(source) {
+      if (!stream || video.videoWidth === 0) return;
+      const blob = await grab(1280, source === "webcam" ? 0.8 : 0.9);
+      if (!blob || (source === "webcam" && !watching)) return;
+      const body = new FormData();
+      body.append("source", source);
+      body.append("file", blob, `${source}.jpg`);
+
+      try {
+        const response = await fetch("/api/detect", { method: "POST", body });
+        const data = await response.json();
+        if (!response.ok) throw new Error(data.detail || "감지 실패");
+        if (source === "webcam") drawLive(data);
+        else showCapture(data);
+      } catch (error) {
+        const meta = document.getElementById(source === "webcam" ? "webcamMeta" : "captureMeta");
+        meta.textContent = error.message;
+      }
+    }
+
+    function drawLive(data) {
+      const now = performance.now();
+      frames += 1;
+      if (now - fpsStamp >= 1000) {
+        fps = Math.round((frames * 1000) / (now - fpsStamp));
+        frames = 0;
+        fpsStamp = now;
+      }
+
+      const width = video.videoWidth;
+      const height = video.videoHeight;
+      if (overlay.width !== width || overlay.height !== height) {
+        overlay.width = width;
+        overlay.height = height;
+      }
+      const ctx = overlay.getContext("2d");
+      ctx.clearRect(0, 0, width, height);
+      const sx = width / data.width;
+      const sy = height / data.height;
+      ctx.lineWidth = 2;
+      ctx.font = "16px sans-serif";
+      data.detections.forEach((item) => {
+        const [x1, y1, x2, y2] = item.box;
+        const x = x1 * sx;
+        const y = y1 * sy;
+        const w = (x2 - x1) * sx;
+        const h = (y2 - y1) * sy;
+        const text = `${item.label} ${(item.confidence * 100).toFixed(0)}%`;
+        ctx.strokeStyle = "#3dd68c";
+        ctx.strokeRect(x, y, w, h);
+        const labelWidth = ctx.measureText(text).width + 8;
+        const labelTop = Math.max(0, y - 20);
+        ctx.fillStyle = "#143024";
+        ctx.fillRect(x, labelTop, labelWidth, 20);
+        ctx.fillStyle = "#d9ffe9";
+        ctx.fillText(text, x + 4, labelTop + 15);
+      });
+
+      document.getElementById("webcamMeta").textContent =
+        `실시간 · ${fps}fps · ${data.count}개 · ${data.inference_ms}ms`;
+      fillList("webcamList", data.detections);
+    }
+
+    function showCapture(data) {
+      document.getElementById("captureMeta").textContent =
+        `캡처 · ${data.count}개 · ${data.inference_ms}ms · ${data.width}x${data.height}`;
+      if (data.image) document.getElementById("captureImage").src = data.image;
+      fillList("captureList", data.detections);
+    }
+
+    function fillList(id, detections) {
+      const list = document.getElementById(id);
+      list.replaceChildren();
+      if (detections.length === 0) {
+        const item = document.createElement("li");
+        item.className = "empty";
+        item.textContent = "검출 없음";
+        list.appendChild(item);
+        return;
+      }
+      detections.forEach((item) => {
+        const row = document.createElement("li");
+        row.textContent = `${item.label} ${(item.confidence * 100).toFixed(1)}%`;
+        list.appendChild(row);
+      });
+    }
+
+    function clearOverlay() {
+      const ctx = overlay.getContext("2d");
+      ctx.clearRect(0, 0, overlay.width, overlay.height);
+    }
+  </script>
+</body>
+</html>
