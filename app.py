@@ -16,23 +16,23 @@ ROOT = Path(__file__).resolve().parent
 DEVICE = 0 if torch.cuda.is_available() else "cpu"
 SOURCES = {"webcam", "capture"}
 CATALOG = {
+    "yolo26n": {
+        "path": ROOT / "models" / "yolo26n.pt",
+        "label": "YOLO26n",
+        "imgsz": 640,
+        "conf": 0.25,
+    },
     "sign": {
         "path": ROOT / "models" / "temp-sign-yolo26n.pt",
-        "label": "표지판(임시)",
+        "label": "표지판·YOLO26n",
         "imgsz": 640,
         "conf": 0.35,
     },
     "sign_full": {
         "path": ROOT / "models" / "traffic-sign-yolo11s.pt",
         "label": "표지판82",
-        "imgsz": 960,
-        "conf": 0.45,
-    },
-    "pi": {
-        "path": ROOT / "models" / "yolo26n.pt",
-        "label": "YOLO26n",
-        "imgsz": 640,
-        "conf": 0.25,
+        "imgsz": 1280,
+        "conf": 0.28,
     },
 }
 NCNN_DIR = ROOT / "models" / "yolo26n_ncnn_model"
@@ -124,7 +124,7 @@ SIGN_KO = {
 
 app = FastAPI()
 loaded = {}
-active = "sign"
+active = "sign_full"
 predict_lock = threading.Lock()
 
 

@@ -169,7 +169,8 @@
 
     async function sendFrame(source) {
       if (!stream || video.videoWidth === 0) return;
-      const blob = await grab(1280, source === "webcam" ? 0.8 : 0.9);
+      const maxW = source === "capture" ? video.videoWidth : 1600;
+      const blob = await grab(maxW, source === "webcam" ? 0.88 : 0.92);
       if (!blob || (source === "webcam" && !watching)) return;
       const body = new FormData();
       body.append("source", source);
